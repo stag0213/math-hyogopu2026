@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>三角形ABCの通過領域の可視化 (-π/2 ≤ t ≤ π/2)</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<style>
+  body { margin:0; overflow:hidden; font-family: sans-serif; background:#111; color:#eee; }
+  #panel {
+    position:absolute; top:10px; left:10px; width:320px; z-index:10;
+    background:rgba(30,30,40,0.9); padding:12px 14px; border-radius:8px;
+    font-size:13px; line-height:1.6;
+  }
+  #panel h3 { margin:0 0 2px; font-size:15px; }
+  #panel label { display:block; }
+  #panel .katex { font-size:1.08em; }
+  input[type=range] { width:100%; }
+  button { margin:4px 4px 4px 0; padding:4px 10px; cursor:pointer; }
+  #coords { margin-top:8px; font-family: monospace; font-size:12px; white-space:pre; }
+  .formula { margin-top:6px; }
+  .a{color:#ff5555}.b{color:#55ff55}.c{color:#5599ff}
+  .axis-label { color:#ffffff; font-size:20px; text-shadow:0 0 4px #000, 0 0 2px #000; }
+  .tick-label { color:#c8c8d0; font-size:13px; text-shadow:0 0 3px #000; }
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+    "katex": "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.mjs"
+} }
+</script>
+</head>
+<body>
+<div id="panel">
+  <h3>三角形ABCの通過立体</h3>
+  <div id="rangeTex"></div>
+  <div><span class="a">● A</span> <span class="b">● B</span> <span class="c">● C</span></div>
+  <label><span id="tTex"></span> <span id="tval">0.000</span>
+    <input id="tSlider" type="range" min="-1.5707963" max="1.5707963" step="0.001" value="0">
+  </label>
+  <button id="playBtn">▶ 再生</button>
+  <button id="resetBtn">視点リセット</button>
+  <label>速度 <input id="speed" type="range" min="0.1" max="3" step="0.1" value="0.6"></label>
+  <label>z方向の縮尺 <input id="zscale" type="range" min="0.1" max="1.5" step="0.05" value="0.8"></label>
+  <label>立体の不透明度 <input id="opacity" type="range" min="0" max="1" step="0.05" value="0.55"></label>
+  <label><input type="checkbox" id="showSolid" checked> 立体(側面)を表示</label>
+  <label><input type="checkbox" id="partial"> 現在のtまでの通過部分のみ表示</label>
+  <label><input type="checkbox" id="wire"> ワイヤーフレーム</label>
+  <label><input type="checkbox" id="showTraj" checked> 頂点A,B,Cの軌跡</label>
+  <label><input type="checkbox" id="showSlices"> 断面の三角形を重ねて表示</label>
+  <label><input type="checkbox" id="showAxes" checked> 座標軸</label>
+  <div id="coords"></div>
+  <div class="formula" id="rTex"></div>
+  <div class="formula" id="sTex"></div>
+  <div class="formula" id="vTex"></div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+import katex from 'katex';
+
+const tex = (el, s) => katex.render(s, el, { throwOnError:false });
+
+const PI = Math.PI, r3 = Math.sqrt(3);
+const T0 = -PI/2, T1 = PI/2;          // tの範囲
+const hue = t => (t - T0)/(T1 - T0)*0.8;
+const V3 = (x,y,z) => new THREE.Vector3(x,y,z);
+
+// ===== 頂点の定義 =====
+function A(t){ const c=Math.cos(t), s=Math.sin(t);
+  return V3(c*c, s*c, t); }
+function B(t){ const c=Math.cos(t), s=Math.sin(t);
+  return V3((-r3/2*s - 0.5*c)*c, (-0.5*s + r3/2*c)*c, t); }
+function C(t){ const c=Math.cos(t), s=Math.sin(t);
+  return V3(( r3/2*s - 0.5*c)*c, (-0.5*s - r3/2*c)*c, t); }
+
+// ===== レンダラー =====
+const renderer = new THREE.WebGLRenderer({ antialias:true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(devicePixelRatio);
+document.body.appendChild(renderer.domElement);
+
+// 軸ラベル用(HTML要素を3D位置に重ねる)
+const labelRenderer = new CSS2DRenderer();
+labelRenderer.setSize(innerWidth, innerHeight);
+Object.assign(labelRenderer.domElement.style, {
+  position:'absolute', top:'0', left:'0', pointerEvents:'none'
+});
+document.body.appendChild(labelRenderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x15151c);
+const camera = new THREE.PerspectiveCamera(45, innerWidth/innerHeight, 0.01, 100);
+camera.up.set(0,0,1);
+const defaultCam = V3(3.5, 2.8, 2.0);
+camera.position.copy(defaultCam);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+const dl1 = new THREE.DirectionalLight(0xffffff, 0.9); dl1.position.set(5,5,8); scene.add(dl1);
+const dl2 = new THREE.DirectionalLight(0xffffff, 0.4); dl2.position.set(-5,-3,-6); scene.add(dl2);
+
+const world = new THREE.Group();
+scene.add(world);
+
+// ===== 座標軸(矢印・ラベル・目盛り付き) =====
+const axes = new THREE.Group();
+const axisLabels = [];
+function axisLine(from, to, color){
+  const g = new THREE.BufferGeometry().setFromPoints([from, to]);
+  return new THREE.Line(g, new THREE.LineBasicMaterial({ color }));
+}
+function cone(color){
+  return new THREE.Mesh(new THREE.ConeGeometry(0.035, 0.14, 16),
+    new THREE.MeshBasicMaterial({ color }));
+}
+function makeLabel(texStr, pos, cls, cx=0.5, cy=0.5){
+  const div = document.createElement('div');
+  div.className = cls;
+  tex(div, texStr);
+  const obj = new CSS2DObject(div);
+  obj.position.copy(pos);
+  obj.center.set(cx, cy);
+  axisLabels.push(obj);
+  return obj;
+}
+
+const L = 1.5, ZL0 = T0 - 0.5, ZL1 = T1 + 0.5;
+const colX = 0xff6666, colY = 0x66dd66, colZ = 0x6699ff;
+
+axes.add(axisLine(V3(-L,0,0), V3(L,0,0), colX));
+axes.add(axisLine(V3(0,-L,0), V3(0,L,0), colY));
+axes.add(axisLine(V3(0,0,ZL0), V3(0,0,ZL1), colZ));
+
+const xCone = cone(colX); xCone.position.set(L,0,0);   xCone.rotation.z = -PI/2;
+const yCone = cone(colY); yCone.position.set(0,L,0);
+const zCone = cone(colZ); zCone.position.set(0,0,ZL1); zCone.rotation.x =  PI/2;
+axes.add(xCone, yCone, zCone);
+
+// 軸名
+axes.add(makeLabel('x', V3(L+0.18,0,0), 'axis-label'));
+axes.add(makeLabel('y', V3(0,L+0.18,0), 'axis-label'));
+axes.add(makeLabel('z', V3(0,0,ZL1+0.25), 'axis-label'));
+
+// 目盛り
+const tickMat = 0xaaaaaa, tk = 0.05;
+axes.add(axisLine(V3(1,-tk,0), V3(1,tk,0), tickMat));
+axes.add(axisLine(V3(-tk,1,0), V3(tk,1,0), tickMat));
+axes.add(axisLine(V3(-tk,0,T1), V3(tk,0,T1), tickMat));
+axes.add(axisLine(V3(-tk,0,T0), V3(tk,0,T0), tickMat));
+axes.add(makeLabel('1', V3(1,0,0), 'tick-label', 0.5, -0.15));
+axes.add(makeLabel('1', V3(0,1,0), 'tick-label', 0.5, -0.15));
+axes.add(makeLabel('\\frac{\\pi}{2}',  V3(0,0,T1), 'tick-label', -0.25, 0.5));
+axes.add(makeLabel('-\\frac{\\pi}{2}', V3(0,0,T0), 'tick-label', -0.15, 0.5));
+axes.add(makeLabel('\\mathrm{O}', V3(0,0,0), 'tick-label', 1.3, -0.1));
+world.add(axes);
+
+// ===== 側面(各辺が掃く曲面) =====
+const NT = 400, NS = 24;
+const solidMat = new THREE.MeshPhongMaterial({
+  vertexColors:true, side:THREE.DoubleSide, transparent:true, opacity:0.55,
+  shininess:40, depthWrite:false
+});
+function edgeSurface(P, Q){
+  const pos=[], col=[], idx=[];
+  const color = new THREE.Color();
+  for(let i=0;i<=NT;i++){
+    const t = T0 + (T1-T0)*i/NT;
+    const p = P(t), q = Q(t);
+    color.setHSL(hue(t), 0.75, 0.55);
+    for(let j=0;j<=NS;j++){
+      const v = p.clone().lerp(q, j/NS);
+      pos.push(v.x, v.y, v.z);
+      col.push(color.r, color.g, color.b);
+    }
+  }
+  for(let i=0;i<NT;i++) for(let j=0;j<NS;j++){
+    const a=i*(NS+1)+j, b=a+1, c=a+(NS+1), d=c+1;
+    idx.push(a,c,b, b,c,d);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos,3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col,3));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return new THREE.Mesh(g, solidMat);
+}
+// t=±π/2 で三角形は点に退化するので、側面だけで閉じた立体になる
+const solid = new THREE.Group();
+const sides = [edgeSurface(A,B), edgeSurface(B,C), edgeSurface(C,A)];
+sides.forEach(m=>solid.add(m));
+world.add(solid);
+
+// ===== 頂点の軌跡 =====
+const traj = new THREE.Group();
+[[A,0xff5555],[B,0x55ff55],[C,0x5599ff]].forEach(([F,color])=>{
+  const pts=[]; for(let i=0;i<=NT;i++) pts.push(F(T0+(T1-T0)*i/NT));
+  traj.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
+    new THREE.LineBasicMaterial({ color })));
+});
+world.add(traj);
+
+// ===== 断面の三角形の重ね表示 =====
+const slices = new THREE.Group();
+for(let k=1;k<24;k++){
+  const t = T0 + (T1-T0)*k/24;
+  const c = new THREE.Color().setHSL(hue(t), 0.8, 0.6);
+  slices.add(new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints([A(t),B(t),C(t)]),
+    new THREE.LineBasicMaterial({ color:c })));
+}
+slices.visible = false;
+world.add(slices);
+
+// ===== 現在の三角形 =====
+const triGeo = new THREE.BufferGeometry();
+triGeo.setAttribute('position', new THREE.Float32BufferAttribute(new Array(9).fill(0),3));
+const triMesh = new THREE.Mesh(triGeo, new THREE.MeshBasicMaterial({
+  color:0xffee88, side:THREE.DoubleSide, transparent:true, opacity:0.85 }));
+const triEdgeGeo = new THREE.BufferGeometry();
+triEdgeGeo.setAttribute('position', new THREE.Float32BufferAttribute(new Array(9).fill(0),3));
+const triEdge = new THREE.LineLoop(triEdgeGeo, new THREE.LineBasicMaterial({ color:0xffffff }));
+world.add(triMesh, triEdge);
+
+const sph = new THREE.SphereGeometry(0.035, 16, 16);
+const dots = [0xff5555,0x55ff55,0x5599ff].map(c=>{
+  const m = new THREE.Mesh(sph, new THREE.MeshBasicMaterial({ color:c }));
+  world.add(m); return m;
+});
+
+// ===== UI =====
+const $ = id => document.getElementById(id);
+let t = 0, playing = false;
+const V = 3*r3/8*PI;
+
+// 静的な数式
+tex($('rangeTex'), '-\\frac{\\pi}{2} \\le t \\le \\frac{\\pi}{2}');
+tex($('tTex'), 't =');
+tex($('vTex'), `\\text{体積 } V = \\dfrac{3\\sqrt{3}}{8}\\pi \\approx ${V.toFixed(4)}`);
+
+function f(v){ return (v>=0?' ':'') + v.toFixed(3); }
+function update(){
+  t = Math.min(T1, Math.max(T0, t));
+  const pa=A(t), pb=B(t), pc=C(t);
+  [pa,pb,pc].forEach((p,i)=>{
+    triGeo.attributes.position.setXYZ(i,p.x,p.y,p.z);
+    triEdgeGeo.attributes.position.setXYZ(i,p.x,p.y,p.z);
+    dots[i].position.copy(p);
+  });
+  triGeo.attributes.position.needsUpdate = true;
+  triEdgeGeo.attributes.position.needsUpdate = true;
+  triGeo.computeBoundingSphere(); triEdgeGeo.computeBoundingSphere();
+
+  const partial = $('partial').checked;
+  const rows = partial ? Math.floor((t-T0)/(T1-T0)*NT) : NT;
+  sides.forEach(m=>m.geometry.setDrawRange(0, rows*NS*6));
+
+  $('tval').textContent = t.toFixed(3);
+  $('coords').textContent =
+`A = (${f(pa.x)}, ${f(pa.y)}, ${f(pa.z)})
+B = (${f(pb.x)}, ${f(pb.y)}, ${f(pb.z)})
+C = (${f(pc.x)}, ${f(pc.y)}, ${f(pc.z)})`;
+
+  const area = 3*r3/4*Math.cos(t)**2;
+  tex($('rTex'), `\\text{外接円半径 } r = \\cos t = ${Math.abs(Math.cos(t)).toFixed(4)}`);
+  tex($('sTex'), `\\text{断面積 } S(t) = \\dfrac{3\\sqrt{3}}{4}\\cos^2 t = ${area.toFixed(4)}`);
+}
+
+$('tSlider').oninput = e => { t = parseFloat(e.target.value); update(); };
+$('playBtn').onclick = () => {
+  playing = !playing;
+  $('playBtn').textContent = playing ? '❚❚ 停止' : '▶ 再生';
+};
+$('resetBtn').onclick = () => { camera.position.copy(defaultCam); controls.target.set(0,0,0); };
+function setZScale(s){
+  world.scale.set(1,1,s);
+  zCone.scale.y = 1/s;            // z軸の矢印が伸び縮みしないよう補正
+}
+$('zscale').oninput = e => setZScale(parseFloat(e.target.value));
+$('opacity').oninput = e => { solidMat.opacity = parseFloat(e.target.value); };
+$('showSolid').onchange = e => solid.visible = e.target.checked;
+$('wire').onchange = e => solidMat.wireframe = e.target.checked;
+$('showTraj').onchange = e => traj.visible = e.target.checked;
+$('showSlices').onchange = e => slices.visible = e.target.checked;
+$('showAxes').onchange = e => {
+  axes.visible = e.target.checked;
+  axisLabels.forEach(o => o.visible = e.target.checked);
+};
+$('partial').onchange = update;
+
+setZScale(0.8);
+update();
+
+addEventListener('resize', ()=>{
+  camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  labelRenderer.setSize(innerWidth, innerHeight);
+});
+
+let last = performance.now();
+function animate(now){
+  requestAnimationFrame(animate);
+  const dt = (now-last)/1000; last = now;
+  if(playing){
+    t += dt * parseFloat($('speed').value);
+    if(t > T1) t = T0;
+    $('tSlider').value = t;
+    update();
+  }
+  controls.update();
+  renderer.render(scene, camera);
+  labelRenderer.render(scene, camera);
+}
+requestAnimationFrame(animate);
+</script>
+</body>
+</html>
